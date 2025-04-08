@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Job Description Parser</title>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+  <div class="container">
+    <h1>Job Description Parser</h1>
+    <p class="instructions">Upload one or more job description files (PDF or DOCX) to extract their text.</p>
+
+    <div class="upload-section">
+      <input type="file" id="fileInput" multiple accept=".pdf,.docx" />
+      <button id="uploadBtn">Upload and Parse</button>
+      <p id="fileCount" class="file-count"></p>
+      <p id="validationMsg" class="error-message hidden">Please select at least one file.</p>
+    </div>
+
+    <div id="loading" class="hidden">
+      <div class="spinner"></div>
+      <p>Processing files...</p>
+    </div>
+
+    <div id="results" class="hidden">
+      <div class="results-header">
+        <h2>Results</h2>
+        <button id="deleteAllBtn" class="delete-all-button">Delete All Jobs</button>
+      </div>
+
+      <p id="noResultsMsg" class="empty-msg hidden">No jobs parsed yet. Upload some files to get started!</p>
+
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Filename</th>
+              <th>File Type</th>
+              <th>Status</th>
+              <th>Progress</th>
+              <th>Parse Score</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="error" class="hidden">
+      <p class="error-message"></p>
+    </div>
+  </div>
+
+  <!-- Modal for Full Text -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <span class="close">&times;</span>
+      <h2>Full Text</h2>
+      <pre id="fullText"></pre>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>
