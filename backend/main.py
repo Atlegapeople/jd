@@ -1,6 +1,6 @@
 import os
 import mimetypes
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from bson.objectid import ObjectId
@@ -9,9 +9,37 @@ from dotenv import load_dotenv
 import logging
 from datetime import datetime
 import json
+from models import ErrorCode, ErrorResponse
 
 # Load environment variables from .env
 load_dotenv()
+
+# Constants
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+def create_error_response(code: ErrorCode, message: str, details: str = None) -> JSONResponse:
+    error = ErrorResponse(
+        code=code,
+        message=message,
+        details=details
+    )
+    return JSONResponse(
+        status_code=get_status_code(code),
+        content=json.loads(json.dumps(error.dict(), cls=MongoJSONEncoder))
+    )
+
+def get_status_code(error_code: ErrorCode) -> int:
+    status_codes = {
+        ErrorCode.INVALID_FILE_TYPE: 400,
+        ErrorCode.FILE_TOO_LARGE: 400,
+        ErrorCode.EMPTY_FILE: 400,
+        ErrorCode.PARSING_ERROR: 500,
+        ErrorCode.DATABASE_ERROR: 500,
+        ErrorCode.NOT_FOUND: 404,
+        ErrorCode.INVALID_ID: 400,
+        ErrorCode.UNKNOWN_ERROR: 500
+    }
+    return status_codes.get(error_code, 500)
 
 # Custom JSON encoder to handle ObjectId
 class MongoJSONEncoder(json.JSONEncoder):
@@ -41,6 +69,7 @@ app.add_middleware(
 client = MongoClient("mongodb://localhost:27017")
 db = client["jdparser"]
 file_collection = db["files"]
+candidate_collection = db["candidates"]  # New collection for candidates
 
 logger = logging.getLogger(__name__)
 
@@ -262,4 +291,167 @@ def delete_all_jobs():
         return JSONResponse(
             status_code=500,
             content={"error": f"Failed to delete all jobs: {str(e)}"}
+        )
+
+@app.post("/candidates/parse")
+async def parse_candidate(file: UploadFile = File(...)):
+    try:
+        # Validate file type
+        if not file.content_type in ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Only PDF and DOCX files are supported"
+            )
+            
+        # Read file content
+        file_bytes = await file.read()
+        
+        # Parse document
+        parsed = parse_document(file_bytes, file.content_type)
+        
+        # Create candidate document
+        candidate_doc = {
+            "filename": file.filename,
+            "file_type": file.content_type,
+            "text": parsed["text"],
+            "word_count": parsed["word_count"],
+            "parse_score": parsed["parse_score"],
+            "preview": parsed["preview"],
+            "extracted_info": parsed["extracted_info"],
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        
+        # Insert into MongoDB
+        result = candidate_collection.insert_one(candidate_doc)
+        
+        return {
+            "message": "Candidate CV parsed successfully",
+            "candidate_id": str(result.inserted_id),
+            "filename": file.filename,
+            "word_count": parsed["word_count"],
+            "parse_score": parsed["parse_score"],
+            "extracted_info": parsed["extracted_info"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error parsing candidate CV: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error parsing candidate CV: {str(e)}"
+        )
+
+@app.get("/candidates/all")
+def get_all_candidates():
+    candidates = list(candidate_collection.find().sort("timestamp", -1))
+    # Remove raw_text and formatted_text from response for brevity
+    for candidate in candidates:
+        candidate.pop("raw_text", None)
+        candidate.pop("formatted_text", None)
+    return JSONResponse(content=json.loads(json.dumps(candidates, cls=MongoJSONEncoder)))
+
+@app.get("/candidates/{candidate_id}/text")
+def get_candidate_text(candidate_id: str):
+    try:
+        # Validate candidate_id format
+        if not candidate_id or not ObjectId.is_valid(candidate_id):
+            return create_error_response(
+                ErrorCode.INVALID_ID,
+                "Invalid candidate ID format"
+            )
+
+        # Try to find the document
+        try:
+            candidate = candidate_collection.find_one({
+                "$or": [
+                    {"_id": ObjectId(candidate_id)},
+                    {"candidate_id": candidate_id}
+                ]
+            })
+        except Exception as e:
+            logger.error(f"Database query failed: {str(e)}")
+            return create_error_response(
+                ErrorCode.DATABASE_ERROR,
+                "Database query failed",
+                str(e)
+            )
+
+        # Check if document exists
+        if not candidate:
+            return create_error_response(
+                ErrorCode.NOT_FOUND,
+                f"Candidate not found with ID: {candidate_id}"
+            )
+
+        # Get text content
+        text = candidate.get("formatted_text") or candidate.get("raw_text", "") or candidate.get("text", "")
+        if not text:
+            return create_error_response(
+                ErrorCode.NOT_FOUND,
+                "No text content found"
+            )
+
+        response_data = {"text": text}
+        return JSONResponse(
+            content=json.loads(json.dumps(response_data, cls=MongoJSONEncoder))
+        )
+
+    except Exception as e:
+        logger.error(f"Error retrieving candidate text: {str(e)}")
+        return create_error_response(
+            ErrorCode.UNKNOWN_ERROR,
+            "Failed to retrieve candidate text",
+            str(e)
+        )
+
+@app.delete("/candidates/{candidate_id}")
+def delete_candidate(candidate_id: str):
+    try:
+        # Validate candidate_id format
+        if not candidate_id or not ObjectId.is_valid(candidate_id):
+            logger.error(f"Invalid candidate_id format: {candidate_id}")
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid candidate ID format"}
+            )
+
+        # Try to delete by either _id or candidate_id
+        result = candidate_collection.delete_one({
+            "$or": [
+                {"_id": ObjectId(candidate_id)},
+                {"candidate_id": candidate_id}
+            ]
+        })
+
+        if result.deleted_count == 0:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Candidate not found"}
+            )
+
+        return JSONResponse(
+            status_code=200,
+            content={"status": "deleted", "candidate_id": candidate_id}
+        )
+
+    except Exception as e:
+        logger.error(f"Error deleting candidate {candidate_id}: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to delete candidate: {str(e)}"}
+        )
+
+@app.delete("/candidates/all")
+def delete_all_candidates():
+    try:
+        result = candidate_collection.delete_many({})
+        return JSONResponse(
+            status_code=200,
+            content={"status": "deleted", "count": result.deleted_count}
+        )
+    except Exception as e:
+        logger.error(f"Error deleting all candidates: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to delete all candidates: {str(e)}"}
         )
