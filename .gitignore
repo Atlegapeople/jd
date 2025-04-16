@@ -1,24 +1,43 @@
 # === Python ===
 .venv/
+venv/
+venv311/
+env/
 **/__pycache__/
 *.py[cod]
 *.sqlite3
+*.pkl
+*.db
+
+# === FastAPI / Logs ===
+*.log
+logs/
+*.pid
 
 # === Node.js / Vite / React ===
 frontend/node_modules/
 frontend/dist/
+frontend/.next/
+frontend/.turbo/
+frontend/.output/
+frontend/.env.local
 
-# === Editor / OS junk ===
+# === Editor / IDE / OS Junk ===
 .vscode/
+.idea/
 .DS_Store
 Thumbs.db
 
-# === Logs & caches ===
-*.log
-.cache/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# === Testing / Coverage ===
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
 
-README.md 
-requirements.txt
+# === Dependency lock files (optional to ignore) ===
+# !requirements.txt     ← KEEP this tracked!
+# !README.md            ← KEEP this tracked!
+
+# === Env & secrets ===
+.env
+.env.*
