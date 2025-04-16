@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+motor
+pydantic
+pymongo
+python-docx
+PyPDF2
+pdf2image
+pytesseract
+pillow
+python-dotenv
+pywin32
+pymupdf
+anthropic
