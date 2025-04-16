@@ -1,5 +1,6 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
+from bson.errors import InvalidId
 from typing import List, Dict, Optional, AsyncGenerator
 import os
 from dotenv import load_dotenv
@@ -9,6 +10,9 @@ import json
 # Configure logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+logger.addHandler(handler)
 
 # Load environment variables
 load_dotenv()
@@ -21,25 +25,23 @@ DATABASE_NAME = os.getenv("DATABASE_NAME", "talenthub")
 client = AsyncIOMotorClient(MONGO_URI)
 db = client[DATABASE_NAME]
 
-# Create collections if they don't exist
+# Initialize database collections and indexes
 async def init_db():
-    """Initialize database collections."""
     try:
-        # Create collections if they don't exist
         collections = ['jobs', 'candidates', 'matches', 'reports', 'logs']
         for collection in collections:
             if collection not in await db.list_collection_names():
                 await db.create_collection(collection)
                 logger.info(f"Created collection: {collection}")
-        
-        # Drop existing indexes first
-        await db.jobs.drop_indexes()
-        await db.candidates.drop_indexes()
-        await db.matches.drop_indexes()
-        await db.reports.drop_indexes()
-        await db.logs.drop_indexes()
-        
-        # Create indexes
+
+        # Drop existing indexes except _id
+        for name in ['jobs', 'candidates', 'matches', 'reports', 'logs']:
+            indexes = await db[name].index_information()
+            for index in indexes:
+                if index != "_id_":
+                    await db[name].drop_index(index)
+
+        # Create required indexes
         await db.jobs.create_index("file_id", unique=True, sparse=True)
         await db.candidates.create_index("file_id", unique=True, sparse=True)
         await db.matches.create_index("job_id")
@@ -47,68 +49,74 @@ async def init_db():
         await db.reports.create_index("job_id")
         await db.reports.create_index("created_at")
         await db.logs.create_index("timestamp")
-        
+
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing database: {str(e)}")
         raise e
 
 async def get_db() -> AsyncGenerator:
-    """Get database connection."""
     try:
         yield db
     except Exception as e:
         logger.error(f"Error connecting to database: {str(e)}")
         raise e
 
-# Initialize database on startup
-import asyncio
-asyncio.create_task(init_db())
-
 async def get_job(job_id: str) -> Optional[Dict]:
-    """Get a job by ID."""
     try:
         job = await db.jobs.find_one({"_id": ObjectId(job_id)})
         if job:
             job["_id"] = str(job["_id"])
         return job
+    except InvalidId:
+        logger.error("Invalid job_id format")
+        return None
     except Exception as e:
-        print(f"Error getting job: {str(e)}")
+        logger.error(f"Error getting job: {str(e)}")
+        return None
+
+async def get_candidate(candidate_id: str) -> Optional[Dict]:
+    try:
+        candidate = await db.candidates.find_one({"_id": ObjectId(candidate_id)})
+        if candidate:
+            candidate["_id"] = str(candidate["_id"])
+        return candidate
+    except InvalidId:
+        logger.error("Invalid candidate_id format")
+        return None
+    except Exception as e:
+        logger.error(f"Error getting candidate: {str(e)}")
         return None
 
 async def get_candidates(candidate_ids: List[str]) -> List[Dict]:
-    """Get candidates by IDs."""
     try:
-        candidate_ids = [ObjectId(cid) for cid in candidate_ids]
-        cursor = db.candidates.find({"_id": {"$in": candidate_ids}})
+        object_ids = [ObjectId(cid) for cid in candidate_ids if ObjectId.is_valid(cid)]
+        cursor = db.candidates.find({"_id": {"$in": object_ids}})
         candidates = await cursor.to_list(length=None)
         for candidate in candidates:
             candidate["_id"] = str(candidate["_id"])
         return candidates
     except Exception as e:
-        print(f"Error getting candidates: {str(e)}")
+        logger.error(f"Error getting candidates: {str(e)}")
         return []
 
-async def save_job(job: Dict) -> str:
-    """Save a job to the database."""
+async def save_job(job: Dict) -> Optional[str]:
     try:
         result = await db.jobs.insert_one(job)
         return str(result.inserted_id)
     except Exception as e:
-        print(f"Error saving job: {str(e)}")
+        logger.error(f"Error saving job: {str(e)}")
         return None
 
-async def save_candidate(candidate: Dict) -> str:
-    """Save a candidate to the database."""
+async def save_candidate(candidate: Dict) -> Optional[str]:
     try:
         result = await db.candidates.insert_one(candidate)
         return str(result.inserted_id)
     except Exception as e:
-        print(f"Error saving candidate: {str(e)}")
+        logger.error(f"Error saving candidate: {str(e)}")
         return None
 
 async def get_all_jobs() -> List[Dict]:
-    """Get all jobs."""
     try:
         cursor = db.jobs.find()
         jobs = await cursor.to_list(length=None)
@@ -116,11 +124,10 @@ async def get_all_jobs() -> List[Dict]:
             job["_id"] = str(job["_id"])
         return jobs
     except Exception as e:
-        print(f"Error getting all jobs: {str(e)}")
+        logger.error(f"Error getting all jobs: {str(e)}")
         return []
 
 async def get_all_candidates() -> List[Dict]:
-    """Get all candidates."""
     try:
         cursor = db.candidates.find()
         candidates = await cursor.to_list(length=None)
@@ -128,21 +135,19 @@ async def get_all_candidates() -> List[Dict]:
             candidate["_id"] = str(candidate["_id"])
         return candidates
     except Exception as e:
-        print(f"Error getting all candidates: {str(e)}")
+        logger.error(f"Error getting all candidates: {str(e)}")
         return []
 
 async def clear_database():
-    """Clear all data from the database."""
     try:
         await db.jobs.delete_many({})
         await db.candidates.delete_many({})
         return True
     except Exception as e:
-        print(f"Error clearing database: {str(e)}")
+        logger.error(f"Error clearing database: {str(e)}")
         return False
 
 async def get_matches(job_id: str) -> List[Dict]:
-    """Get all matches for a specific job."""
     try:
         cursor = db.matches.find({"job_id": job_id})
         matches = await cursor.to_list(length=None)
@@ -150,57 +155,43 @@ async def get_matches(job_id: str) -> List[Dict]:
             match["_id"] = str(match["_id"])
         return matches
     except Exception as e:
-        print(f"Error getting matches: {str(e)}")
+        logger.error(f"Error getting matches: {str(e)}")
         return []
 
-async def save_report(report: Dict) -> str:
-    """Save a report to the database."""
+async def save_report(report: Dict) -> Optional[str]:
     try:
-        logger.info(f"Attempting to save report with data: {json.dumps(report, default=str)}")
-        
-        # Ensure required fields are present
         required_fields = ['job_id', 'filename', 'created_at', 'content', 'status']
-        missing_fields = [field for field in required_fields if field not in report]
-        if missing_fields:
-            logger.error(f"Missing required fields in report: {missing_fields}")
-            return None
-            
-        # Convert job_id to ObjectId if it's not already
+        for field in required_fields:
+            if field not in report:
+                logger.error(f"Missing required field: {field}")
+                return None
+
         if isinstance(report['job_id'], str):
-            report['job_id'] = ObjectId(report['job_id'])
-            
-        # Insert the report
+            try:
+                report['job_id'] = ObjectId(report['job_id'])
+            except InvalidId:
+                logger.error("Invalid job_id format in report")
+                return None
+
         result = await db.reports.insert_one(report)
-        report_id = str(result.inserted_id)
-        
-        # Verify the report was saved
-        saved_report = await db.reports.find_one({"_id": result.inserted_id})
-        if saved_report:
-            logger.info(f"Successfully saved report with ID: {report_id}")
-            return report_id
-        else:
-            logger.error(f"Failed to verify report was saved: {report_id}")
-            return None
-            
+        return str(result.inserted_id)
     except Exception as e:
         logger.error(f"Error saving report: {str(e)}")
         return None
 
 async def get_reports(job_id: str) -> List[Dict]:
-    """Get all reports for a specific job."""
     try:
-        cursor = db.reports.find({"job_id": job_id}).sort("created_at", -1)
+        cursor = db.reports.find({"job_id": ObjectId(job_id)}).sort("created_at", -1)
         reports = await cursor.to_list(length=None)
         for report in reports:
             report["id"] = str(report["_id"])
             del report["_id"]
         return reports
     except Exception as e:
-        print(f"Error getting reports: {str(e)}")
+        logger.error(f"Error getting reports: {str(e)}")
         return []
 
 async def get_report(report_id: str) -> Optional[Dict]:
-    """Get a report by ID."""
     try:
         report = await db.reports.find_one({"_id": ObjectId(report_id)})
         if report:
@@ -208,5 +199,5 @@ async def get_report(report_id: str) -> Optional[Dict]:
             del report["_id"]
         return report
     except Exception as e:
-        print(f"Error getting report: {str(e)}")
+        logger.error(f"Error getting report: {str(e)}")
         return None

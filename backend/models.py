@@ -3,6 +3,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
 from bson import ObjectId
+from pydantic import validator
 
 class ErrorCode(str, Enum):
     INVALID_FILE_TYPE = "INVALID_FILE_TYPE"
@@ -105,6 +106,12 @@ class ExtractedCandidateInfo(BaseModel):
     skills: List[str] = []
     languages: List[str] = []
     certifications: List[str] = []
+
+    @validator("certifications", pre=True)
+    def ensure_certifications_are_strings(cls, v):
+        if isinstance(v, list):
+            return [str(item) for item in v if item is not None]
+        return []
 
     class Config:
         from_attributes = True
